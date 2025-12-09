@@ -168,14 +168,12 @@ def sample_batches():
         batch_df = df.iloc[start_idx:end_idx]
         yield batch_df
 
-topk_prompt = "The paper {Title} by {Authors} is most relevant to computer networking"
-wanted_k = 3
 
-def nonstreaming_topk(df_iter) -> pd.DataFrame:
+def nonstreaming_topk(df_iter, topk_prompt, wanted_k) -> pd.DataFrame:
     tot_df = pd.concat(df_iter)
-    return tot_df.sem_topk(topk_prompt, K=3)
+    return tot_df.sem_topk(topk_prompt, K=wanted_k)
 
-def streaming_topk_basic(df_iter) -> pd.DataFrame:
+def streaming_topk_basic(df_iter, topk_prompt, wanted_k) -> pd.DataFrame:
     curr_topk = pd.DataFrame({})
     for df in df_iter:
         if curr_topk.empty:
@@ -233,7 +231,7 @@ def finalize_heap_topk(heap):
     return SemanticTopKOutput(indexes=indexes, stats=stats)
 
 
-def streaming_topk_incremental(df_iter) -> pd.DataFrame:
+def streaming_topk_incremental(df_iter, topk_prompt, wanted_k) -> pd.DataFrame:
     model = lotus.settings.lm
     if model is None:
         raise ValueError(
@@ -266,10 +264,13 @@ def streaming_topk_incremental(df_iter) -> pd.DataFrame:
 
 batch_size = 5
 def exp(strategy):
+    topk_prompt = "The paper {Title} by {Authors} is most relevant to computer networking"
+    wanted_k = 3
+
     lotus.settings.lm.reset_stats()
     lotus.settings.lm.reset_cache()
     then = time.time()
-    topk = strategy(sample_batches())
+    topk = strategy(sample_batches(), topk_prompt, wanted_k)
     basic_time = time.time() - then
     print(f"{strategy.__name__}: topk in batches of {batch_size} in {basic_time}s")
     print(topk)
