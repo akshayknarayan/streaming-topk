@@ -182,6 +182,13 @@ def streaming_topk_basic(df_iter, topk_prompt, wanted_k) -> pd.DataFrame:
             curr_topk = pd.concat([curr_topk, df]).sem_topk(topk_prompt, K=wanted_k)
     return curr_topk
 
+class RevHeapDoc:
+    def __init__(self, inner: HeapDoc) -> None:
+        self._inner = inner
+
+    def __lt__(self, other: "RevHeapDoc") -> bool:
+        return not (self._inner < other._inner)
+
 def docs_to_heapdoc(
     docs: list[dict[str, Any]],
     model: lotus.models.LM,
@@ -193,7 +200,7 @@ def docs_to_heapdoc(
     HeapDoc.model = model
     HeapDoc.explanations = {}
     for idx in range(len(docs)):
-        yield HeapDoc(docs[idx], user_instruction, idx)
+        yield RevHeapDoc(HeapDoc(docs[idx], user_instruction, idx))
 
 def llm_heapsort(
     docs: list[dict[str, Any]],
@@ -202,9 +209,9 @@ def llm_heapsort(
     K: int,
 ):
     heap = list(docs_to_heapdoc(docs, model, user_instruction))
-    heapq.heapify_max(heap)
+    heapq.heapify(heap)
     while len(heap) > K:
-        heapq.heappop_max(heap)
+        heapq.heappop(heap)
     return heap
 
 def incr_heap(
@@ -215,13 +222,13 @@ def incr_heap(
 ):
     # K == len(heap)
     for doc in docs_to_heapdoc(new_docs, model, user_instruction):
-        heapq.heappushpop_max(heap, doc)
+        heapq.heappushpop(heap, doc)
     return heap
 
 def finalize_heap_topk(heap):
     # why do we need to heap-pop if we don't care about order within the top-k?
     #indexes = [heapq.heappop(heap).idx for _ in range(len(heap))]
-    indexes = [h.idx for h in heap]
+    indexes = [h._inner.idx for h in heap]
 
     stats = {
         "total_tokens": HeapDoc.total_tokens,
