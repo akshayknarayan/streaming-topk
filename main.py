@@ -193,6 +193,7 @@ def docs_to_heapdoc(
     docs: list[dict[str, Any]],
     model: lotus.models.LM,
     user_instruction: str,
+    rev=True
 ):
     HeapDoc.num_calls = 0
     HeapDoc.total_tokens = 0
@@ -200,7 +201,10 @@ def docs_to_heapdoc(
     HeapDoc.model = model
     HeapDoc.explanations = {}
     for idx in range(len(docs)):
-        yield RevHeapDoc(HeapDoc(docs[idx], user_instruction, idx))
+        if rev:
+            yield RevHeapDoc(HeapDoc(docs[idx], user_instruction, idx))
+        else:
+            yield HeapDoc(docs[idx], user_instruction, idx)
 
 def llm_heapsort(
     docs: list[dict[str, Any]],
@@ -221,6 +225,12 @@ def incr_heap(
     user_instruction: str
 ):
     # K == len(heap)
+    # use rev=False for a min-heap (don't reverse)
+    #new_min_heap = list(docs_to_heapdoc(new_docs, model, user_instruction, rev=False))
+    #heapq.heapify(new_min_heap)
+    #while new_min_heap[0] < heap[0]._inner:
+    #    pass
+
     for doc in docs_to_heapdoc(new_docs, model, user_instruction):
         heapq.heappushpop(heap, doc)
     return heap
@@ -268,6 +278,106 @@ def streaming_topk_incremental(df_iter, topk_prompt, wanted_k) -> pd.DataFrame:
         curr_df = curr_df.head(wanted_k)
 
     return curr_df
+
+#########################################
+###                                   ###
+###        Quicksort Approach         ###
+###                                   ###
+#########################################
+
+from lotus.sem_ops.sem_topk import compare_batch_binary
+from tqdm import tqdm
+
+def llm_quicksort(
+    docs: list[dict[str, Any]],
+    model: lotus.models.LM,
+    user_instruction: str,
+    K: int,
+) -> SemanticTopKOutput:
+    stats: dict[str, Any] = {}
+    stats["total_tokens"] = 0
+    stats["total_llm_calls"] = 0
+    stats["explanations"] = {}
+
+    def partition(indexes: list[int], low: int, high: int, K: int) -> int:
+        nonlocal stats
+        i = low - 1
+
+        # With embedding optimization
+        if K <= high - low:
+            pivot_value = heapq.nsmallest(K, indexes[low : high + 1])[-1]
+        else:
+            pivot_value = heapq.nsmallest(int((high - low + 1) / 2), indexes[low : high + 1])[-1]
+        pivot_index = indexes.index(pivot_value)
+
+        pivot = docs[pivot_value]
+        indexes[pivot_index], indexes[high] = indexes[high], indexes[pivot_index]
+
+        pairs = [(docs[indexes[j]], pivot) for j in range(low, high)]
+        comparisons, explanations, tokens = compare_batch_binary(pairs, model, user_instruction)
+        stats["total_tokens"] += tokens
+        stats["total_llm_calls"] += len(pairs)
+
+        for j, (doc1_is_better, explanation) in enumerate(zip(comparisons, explanations), start=low):
+            doc_idx = indexes[j]
+            if doc_idx not in stats["explanations"]:
+                stats["explanations"][doc_idx] = []
+            stats["explanations"][doc_idx].append(explanation)
+
+        for j, doc1_is_better in enumerate(comparisons, start=low):
+            if doc1_is_better:
+                i += 1
+                indexes[i], indexes[j] = indexes[j], indexes[i]
+
+        indexes[i + 1], indexes[high] = indexes[high], indexes[i + 1]
+        return i + 1
+
+    def quicksort_recursive(indexes: list[int], low: int, high: int, K: int) -> None:
+        if high <= low:
+            return
+
+        if high - low <= K:
+            return
+
+        num_comparisons = high - low
+        pbar = tqdm(
+            total=num_comparisons,
+            desc="Quicksort comparisons",
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} LM calls [{elapsed}<{remaining}]",
+        )
+        pi = partition(indexes, low, high, K)
+        pbar.update(num_comparisons)
+        pbar.close()
+        left_size = pi - low
+        if left_size + 1 >= K:
+            quicksort_recursive(indexes, low, pi - 1, K)
+        else:
+            # we don't need to sort the left side since we know they are in the topk.
+            #quicksort_recursive(indexes, low, pi - 1, left_size)
+            quicksort_recursive(indexes, pi + 1, high, K - left_size - 1)
+
+    indexes = list(range(len(docs)))
+    quicksort_recursive(indexes, 0, len(indexes) - 1, K)
+
+    return SemanticTopKOutput(indexes=indexes, stats=stats)
+
+
+
+def streaming_quick_topk_incremental(df_iter, topk_prompt, wanted_k) -> pd.DataFrame:
+    model = lotus.settings.lm
+    if model is None:
+        raise ValueError(
+            "The language model must be an instance of LM. Please configure a valid language model using lotus.settings.configure()"
+        )
+
+    col_li = lotus.nl_expression.parse_cols(topk_prompt)
+    formatted_usr_instr = lotus.nl_expression.nle2str(topk_prompt, col_li)
+
+    for df in df_iter:
+        for column in col_li:
+            if column not in df.columns:
+                raise ValueError(f"column {column} not found in DataFrame. Given usr instruction: {topk_prompt}")
+        multimodal_data = task_instructions.df2multimodal_info(df, col_li)
 
 batch_size = 5
 def exp(strategy):

@@ -8,4 +8,5 @@ dependencies = [
     "litellm>=1.80.9",
     "lotus-ai>=1.1.4",
     "pandas>=2.3.3",
+    "tqdm>=4.67.1",
 ]
